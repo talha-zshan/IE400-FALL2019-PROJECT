@@ -1,0 +1,11 @@
+public class Obstacle
+{
+   int x,y;
+   int wit, hei;
+   
+   public 
+   point a = new point(x,y);
+   point b = new point(x,y+hei);
+   point c = new point(x+wit,y+hei);
+   point d = new point(x+wit,y);
+}   

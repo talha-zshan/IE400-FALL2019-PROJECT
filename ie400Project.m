@@ -1,0 +1,179 @@
+clc
+clear;
+
+% Data
+Nodes = readmatrix('Points.csv');
+Blocks = readmatrix('Blocks.csv');
+
+% weightMatrix = sparse(size(Nodes, 1), size(Nodes, 1));
+weightMatrix = zeros(size(Nodes, 1), size(Nodes, 1));
+
+% get all boxes -- format: [bl,br,tl,tr]
+boxes = cell( size(Blocks,1), size(Blocks,2)); 
+
+for i = 1 : size( Blocks, 1)
+    x = Blocks(i, 1);
+    y = Blocks(i, 2);
+    width = Blocks(i, 3);
+    height = Blocks(i, 4);    
+    
+    % Format of the box
+    % tl ---- tr
+    % |       |
+    % |       |
+    % bl ---- br
+    
+    [bl, br, tl, tr] = getBox( x, y, width, height);
+    boxes{ i, 1} = bl;
+    boxes{ i, 2} = br;
+    boxes{ i, 3} = tl;
+    boxes{ i, 4} = tr;
+end
+
+for i = 1 : size( Nodes,1)
+    weight = 0;
+    
+    % extract cordinates  of current point
+    currCord = Nodes(i,:);
+    currX = currCord(1);
+    currY = currCord(2);
+    
+    for j = i + 1 : size( Nodes, 1)
+        destCord = Nodes( j,:);
+        destX = destCord(1);
+        destY = destCord(2);
+        
+        % check the X-then-Y path
+        weight = getXYPath(currX, currY, destX, destY, boxes);
+        
+        % if weight is returned as INF, means that path was blocked
+        % if that's the case, take the Y-then-X route
+        if ( weight == 0)
+            weight = getYXPath(currX, currY, destX, destY, boxes);
+            % if still 0 is returned, means that it is not possible to reach from i to j
+            weightMatrix(i,j) = weight; 
+        else
+            weightMatrix(i,j) = weight;
+        end
+    end
+end
+
+% Use the weightMatrix to generate a graph
+graphMatrix = sparse(weightMatrix);
+
+% h = view(biograph(graph,[],'ShowArrows', 'off', 'ShowWeights','on'))
+% [bmf_weigths, bmf_path] = graphshortestpath(graphMatrix,1, 'Method', 'Bellman-Ford');
+% [djk_weights, djk_path] = graphshortestpath(graphMatrix,1, 'Method', 'Dijkstra');
+
+% disp BMF
+% bmf_path;
+% disp DJK
+% djk_path;
+
+% G = graph(graphMatrix,'upper');
+
+% d = distances(G)
+% d = distances(G,[1 2 3 4 5])
+% TR = shortestpathtree(G,1)
+% p = plot(G)
+% highlight(p, TR, 'EdgeColor', 'r')
+
+% Travelling salesman approach
+
+nStops = size(weightMatrix,1);
+idxs = nchoosek(1:nStops,2);
+
+UG = weightMatrix+weightMatrix';
+dist = UG(:);
+lendist = length(dist);
+
+% Create Problem and Binary variables
+tsp = optimproblem;
+trips = optimvar('trips',lendist,1,'Type','integer','LowerBound',0, 'UpperBound', 1);
+% Objective function
+tsp.Objective = dist'*trips;
+
+% Constraint 1 
+constrips = sum(trips) == nStops;
+tsp.Constraints.constrips = constrips;
+
+% Constraint 2
+constr2trips = optimconstr(nStops,1);
+for stops = 1:nStops
+    whichIdxs = (idxs == stops);
+    whichIdxs = any(whichIdxs,2); % start or end at stops
+    constr2trips(stops) = sum(trips(whichIdxs)) == 2;
+end
+tsp.Constraints.constr2trips = constr2trips;
+
+% Constraint 3
+
+
+opts = optimoptions('intlinprog','Display','off');
+[tspsol,fval,exitflag,output] = solve(tsp,'options',opts);
+
+plot(Nodes(:,1),Nodes(:,2),'or')
+hold off
+
+hold on
+segments = find(tspsol.trips); % Get indices of lines on optimal path
+lh = zeros(nStops,1); % Use to store handles to lines on plot
+lh = updateSalesmanPlot(lh,tspsol.trips,idxs,Nodes(:,1),Nodes(:,2));
+title('Solution with Subtours');
+
+% Remove Subtours
+tours = detectSubtours(tspsol.trips,idxs);
+numtours = length(tours); % number of subtours
+
+% Index of added constraints for subtours
+k = 1;
+while numtours > 1 % repeat until there is just one subtour
+    % Add the subtour constraints
+    for ii = 1:numtours
+        subTourIdx = tours{ii}; % Extract the current subtour
+%         The next lines find all of the variables associated with the
+%         particular subtour, then add an inequality constraint to prohibit
+%         that subtour and all subtours that use those stops.
+        variations = nchoosek(1:length(subTourIdx),2);
+        a = false(length(idxs),1);
+        for jj = 1:length(variations)
+            whichVar = (sum(idxs==subTourIdx(variations(jj,1)),2)) & ...
+                       (sum(idxs==subTourIdx(variations(jj,2)),2));
+            a = a | whichVar;
+        end
+        tsp.Constraints.(sprintf('subtourconstr%i',k)) = sum(trips(a)) <= length(subTourIdx)-1;
+        k = k + 1;
+    end
+    % Try to optimize again
+    [tspsol,fval,exitflag,output] = solve(tsp,'options',opts);
+
+    % Visualize result
+    lh = updateSalesmanPlot(lh,tspsol.trips,idxs,Nodes(:,1),Nodes(:,2))
+
+    % How many subtours this time?
+    tours = detectSubtours(tspsol.trips,idxs);
+    numtours = length(tours); % number of subtours
+    fprintf('# of subtours: %d\n',numtours);
+end
+
+title('Solution with Subtours Eliminated');
+hold off
+
+celldisp(tours)
+
+path = cell2mat(tours);
+
+% Print path and distance travelled
+currNode = 1;
+distanceTravelled = 0;
+for i = 1:size(path,2)-1
+    nextNode = path(1,i);
+    dist_bet_nodes = weightMatrix(currNode,nextNode);
+    a = [currNode nextNode dist_bet_nodes]
+    distanceTravelled = distanceTravelled + dist_bet_nodes;
+    currNode = nextNode; 
+end
+
+
+
+
